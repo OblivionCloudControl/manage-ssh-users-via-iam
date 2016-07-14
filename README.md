@@ -29,12 +29,12 @@ This script is written to be used on an EC2 instance. This instance must launche
 
 ## Deploying users
 ```
-sudo ./src/sync_users.py start
+$ sudo ./src/sync_users.py start
 ```
 
 ## Undeploying users
 ```
-sudo ./src/sync_users.py stop
+$ sudo ./src/sync_users.py stop
 ```
 
 ## TODO
