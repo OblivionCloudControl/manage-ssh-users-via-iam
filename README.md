@@ -2,7 +2,7 @@
 
 When this script is called with the parameter to deploy new users it will:
 
-1. Retrieve a list of IAM users which are member of a group. This group should be named as '<aws_alias>_ssh'
+1. Retrieve a list of IAM users which are member of a group. This group should be named as '&lt;aws_alias&gt;_ssh'
 1. Download the available SSH keys from IAM (available in the console under CodeCommit deploy keys)
 1. Create a local group on the instance
 1. Create local users on the instance
