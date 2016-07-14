@@ -1,0 +1,16 @@
+{
+	"Version": "2012-10-17",
+	"Statement": [{
+		"Sid": "Stmt1468523708000",
+		"Effect": "Allow",
+		"Action": [
+			"iam:ListAccountAliases",
+			"iam:GetGroup",
+			"iam:GetSSHPublicKey",
+			"iam:ListSSHPublicKeys"
+		],
+		"Resource": [
+			"*"
+		]
+	}]
+}
