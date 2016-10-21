@@ -17,14 +17,54 @@ import os
 import pwd
 
 import boto3
+import argparse
+import urllib2
 import logging
 import sys
 from logging.handlers import SysLogHandler
 
+# Get command line arguments
+parser = argparse.ArgumentParser(prog='sync_users')
+parser.add_argument('-a', '--accountid', help='AWS account id', required=False)
+parser.add_argument('-r', '--role', help='AWS role name to assume', required=False)
+parser.add_argument('action', choices=('start', 'stop'))
+
+args = parser.parse_args()
+
+# Ensure that both accountid and role are defined when using AssumeRole
+if args.accountid and not args.role or args.role and not args.accountid:
+    parser.error('AssumeRole needs both accountid and role specified')
+
+if args.accountid is None:
+    try:
+        iam = boto3.client('iam')
+    except Exception as e:
+        print(e)
+        sys.exit(1)
+else:
+    # If we can retrieve the instance id we can use it in the assume role session name
+    try:
+        instance_id = urllib2.urlopen('http://169.254.169.254/latest/meta-data/instance-id', timeout=3).read()
+    except urllib2.URLError:
+        instance_id = 'unknown'
+
+    # Use STS to AssumeRole to the given account id and role
+    sts_client = boto3.client('sts')
+
+    assumed_role_object = sts_client.assume_role(
+        RoleArn="arn:aws:iam::" + args.accountid + ":role/" + args.role,
+        RoleSessionName=parser.prog + "-" + instance_id
+    )
+
+    access_key = assumed_role_object['Credentials']['AccessKeyId']
+    secret_key = assumed_role_object['Credentials']['SecretAccessKey']
+    session_token = assumed_role_object['Credentials']['SessionToken']
+
+    iam = boto3.client('iam', aws_access_key_id=access_key,
+                       aws_secret_access_key=secret_key,
+                       aws_session_token=session_token, )
 
 log = logging.getLogger(__name__)
-
-iam = boto3.client('iam')
 
 
 def setup_logging():
@@ -49,7 +89,6 @@ def print_logging(msg):
 
 
 def list_keys_per_user(**kwargs):
-
     return [
         iam.get_ssh_public_key(UserName=ssh_public_key['UserName'], SSHPublicKeyId=ssh_public_key['SSHPublicKeyId'],
                                Encoding='SSH')['SSHPublicKey']
@@ -57,15 +96,18 @@ def list_keys_per_user(**kwargs):
 
 
 def populate_users(**kwargs):
-
     return [
         dict({unicode('authorized_keys'): unicode('\n'.join([
-            '%s SSHPublicKeyId=%s' % (ssh_key['SSHPublicKeyBody'], ssh_key['SSHPublicKeyId'])
-            for ssh_key in list_keys_per_user(UserName=iam_user['UserName'])
-            if ssh_key['Status'] == 'Active'
-        ])), unicode('ssh_user'): unicode(iam_user['UserName'].lower())}.items() + iam_user.items())
+                                                                '%s SSHPublicKeyId=%s' % (
+                                                                    ssh_key['SSHPublicKeyBody'],
+                                                                    ssh_key['SSHPublicKeyId'])
+                                                                for ssh_key in
+                                                                list_keys_per_user(UserName=iam_user['UserName'])
+                                                                if ssh_key['Status'] == 'Active'
+                                                                ])),
+              unicode('ssh_user'): unicode(iam_user['UserName'].lower())}.items() + iam_user.items())
         for iam_user in iam.get_group(**kwargs)['Users']
-    ]
+        ]
 
 
 def user_exists(username):
@@ -222,30 +264,23 @@ def stop():
     delete_users(groupname=group)
     print_logging('Done undeploying users')
 
-def print_usage():
-    print('Usage: %s <start|stop>' % sys.argv[0])
-
 
 def main():
-    setup_logging()
 
-    try:
-        cmd = sys.argv[1]
-    except IndexError:
-        print_usage()
-        sys.exit(1)
+    setup_logging()
 
     if os.getuid() != 0:
         print_logging('Run this script as root!')
         sys.exit(1)
 
-    if cmd == 'start':
+    if args.action == 'start':
         start()
-    elif cmd == 'stop':
+    elif args.action == 'stop':
         stop()
     else:
-        print_usage()
+        print_logging('Unknown action')
         sys.exit(1)
+
 
 if __name__ == '__main__':
     main()
