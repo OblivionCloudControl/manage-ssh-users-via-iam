@@ -17,14 +17,60 @@ import os
 import pwd
 
 import boto3
+import argparse
+import urllib2
 import logging
 import sys
 from logging.handlers import SysLogHandler
 
+# Get command line arguments
+parser = argparse.ArgumentParser(prog='sync_users')
+parser.add_argument('-a', '--accountid', help='AWS account id', required=False)
+parser.add_argument('-r', '--role', help='AWS role name to assume', required=False)
+parser.add_argument('action', choices=('start', 'stop'))
+parser_required_named = parser.add_argument_group('required named arguments')
+parser_required_named.add_argument('-g', '--group', help='IAM group that contains SSH users', required=True)
+args = parser.parse_args()
+
+# Ensure that both accountid and role are defined when using AssumeRole
+if args.accountid and not args.role or args.role and not args.accountid:
+    parser.error('AssumeRole needs both accountid and role specified')
+
+if args.accountid is None:
+    try:
+        iam = boto3.client('iam')
+    except Exception as e:
+        print(e)
+        sys.exit(1)
+else:
+    # If we can retrieve the instance id we can use it in the assume role session name
+    try:
+        instance_id = urllib2.urlopen('http://169.254.169.254/latest/meta-data/instance-id', timeout=3).read()
+    except urllib2.URLError:
+        instance_id = 'unknown'
+
+    try:
+        # Use STS to AssumeRole to the given account id and role
+        sts_client = boto3.client('sts')
+
+        assumed_role_object = sts_client.assume_role(
+            RoleArn="arn:aws:iam::" + args.accountid + ":role/" + args.role,
+            RoleSessionName=parser.prog + "-" + instance_id
+        )
+
+        access_key = assumed_role_object['Credentials']['AccessKeyId']
+        secret_key = assumed_role_object['Credentials']['SecretAccessKey']
+        session_token = assumed_role_object['Credentials']['SessionToken']
+
+        iam = boto3.client('iam', aws_access_key_id=access_key,
+                           aws_secret_access_key=secret_key,
+                           aws_session_token=session_token, )
+    except Exception as e:
+        print(e)
+        sys.exit(1)
+
 
 log = logging.getLogger(__name__)
-
-iam = boto3.client('iam')
 
 
 def setup_logging():
@@ -44,12 +90,7 @@ def setup_logging():
     log.addHandler(stdout_handler)
 
 
-def print_logging(msg):
-    log.info(msg)
-
-
 def list_keys_per_user(**kwargs):
-
     return [
         iam.get_ssh_public_key(UserName=ssh_public_key['UserName'], SSHPublicKeyId=ssh_public_key['SSHPublicKeyId'],
                                Encoding='SSH')['SSHPublicKey']
@@ -57,15 +98,18 @@ def list_keys_per_user(**kwargs):
 
 
 def populate_users(**kwargs):
-
     return [
         dict({unicode('authorized_keys'): unicode('\n'.join([
-            '%s SSHPublicKeyId=%s' % (ssh_key['SSHPublicKeyBody'], ssh_key['SSHPublicKeyId'])
-            for ssh_key in list_keys_per_user(UserName=iam_user['UserName'])
-            if ssh_key['Status'] == 'Active'
-        ])), unicode('ssh_user'): unicode(iam_user['UserName'].lower())}.items() + iam_user.items())
+                                                                '%s SSHPublicKeyId=%s' % (
+                                                                    ssh_key['SSHPublicKeyBody'],
+                                                                    ssh_key['SSHPublicKeyId'])
+                                                                for ssh_key in
+                                                                list_keys_per_user(UserName=iam_user['UserName'])
+                                                                if ssh_key['Status'] == 'Active'
+                                                                ])),
+              unicode('ssh_user'): unicode(iam_user['UserName'].lower())}.items() + iam_user.items())
         for iam_user in iam.get_group(**kwargs)['Users']
-    ]
+        ]
 
 
 def user_exists(username):
@@ -86,7 +130,7 @@ def create_local_group(groupname):
     try:
         return grp.getgrnam(groupname)
     except KeyError:
-        print_logging('Create group %s' % groupname)
+        log.info('Create group %s' % groupname)
 
         create_group_command = 'groupadd %s' % groupname
         os.system(create_group_command)
@@ -96,10 +140,10 @@ def create_local_group(groupname):
 
 def create_user(username, groupname, rotate_user=False):
     if user_exists(username=username) and rotate_user:
-        print_logging('User %s already exists, but not part of group. Rotating user' % username)
+        log.info('User %s already exists, but not part of group. Rotating user' % username)
         delete_user(username)
 
-    print_logging('Create user %s' % username)
+    log.info('Create user %s' % username)
     create_user_command = 'useradd -G %s,wheel -c "%s" -m %s' % (groupname, username, username)
     os.system(create_user_command)
 
@@ -108,10 +152,10 @@ def create_user(username, groupname, rotate_user=False):
 
 def sync_users(iam_users, groupname, local_group_data):
     iam_usernames = [iam_user['ssh_user'] for iam_user in iam_users]
-    print_logging('Got IAM users: %s' % ', '.join(sorted(iam_usernames)))
+    log.info('Got IAM users: %s' % ', '.join(sorted(iam_usernames)))
 
     gr_name, gr_passwd, gr_gid, gr_mem = local_group_data
-    print_logging('Got local users: %s' % ', '.join(sorted(gr_mem)))
+    log.info('Got local users: %s' % ', '.join(sorted(gr_mem)))
 
     to_remove = [local_user for local_user in gr_mem if local_user not in [iam_user for iam_user in iam_usernames]]
     to_add = [iam_user for iam_user in iam_usernames if iam_user not in [local_user for local_user in gr_mem]]
@@ -138,7 +182,7 @@ def write_ssh_authorized_keys(iam_users):
 
         ssh_authorized_keys = os.path.join(ssh_dir, 'authorized_keys')
 
-        print_logging('Writing authorized_keys for user %s' % iam_user['ssh_user'])
+        log.info('Writing authorized_keys for user %s' % iam_user['ssh_user'])
         f = open(ssh_authorized_keys, 'w')
         f.write('%s\n' % iam_user['authorized_keys'])
         f.close()
@@ -150,7 +194,7 @@ def write_ssh_authorized_keys(iam_users):
 def write_sudo_config(groupname):
     sudoers_file = os.path.join('/etc/sudoers.d/', groupname)
 
-    print_logging('Writing sudoers config')
+    log.info('Writing sudoers config')
     f = open(sudoers_file, 'w')
     f.write('%%%s ALL=(ALL) NOPASSWD:ALL' % groupname)
     f.close()
@@ -166,10 +210,10 @@ def delete_sudo_config(groupname):
 
 
 def delete_user(username):
-    print_logging('Delete user %s' % username)
+    log.info('Delete user %s' % username)
 
     if username in ('root', 'ec2-user', 'centos', 'ubuntu'):
-        print_logging('Cannot delete user')
+        log.info('Cannot delete user')
         return False
 
     delete_user_command = 'userdel -r %s' % username
@@ -194,58 +238,49 @@ def format_groupname(groupname):
     return ''.join(map(lambda x: x if (x.isupper() or x.islower()) else "_", groupname.strip()))
 
 
-def get_groupname():
-    iam_alias = iam.list_account_aliases()['AccountAliases'][0]
-
-    return '%s_ssh' % format_groupname(groupname=iam_alias)
-
-
-def start():
-    print_logging('Deploying users')
-    group = get_groupname()
+def start(group):
+    log.info('Deploying users')
 
     local_group = create_local_group(groupname=group)
 
-    iam_user_list = populate_users(GroupName=group)
+    try:
+        iam_user_list = populate_users(GroupName=group)
+    except Exception as e:
+        print(e)
+
     sync_users(iam_users=iam_user_list, groupname=group, local_group_data=local_group)
 
     write_ssh_authorized_keys(iam_users=iam_user_list)
     write_sudo_config(groupname=group)
-    print_logging('Done deploying users')
+    log.info('Done deploying users')
 
 
-def stop():
-    print_logging('Undeploying users')
-    group = get_groupname()
+def stop(group):
+    log.info('Undeploying users')
 
     delete_sudo_config(groupname=group)
     delete_users(groupname=group)
-    print_logging('Done undeploying users')
-
-def print_usage():
-    print('Usage: %s <start|stop>' % sys.argv[0])
+    log.info('Done undeploying users')
 
 
 def main():
+
+    group = args.group
+
     setup_logging()
 
-    try:
-        cmd = sys.argv[1]
-    except IndexError:
-        print_usage()
-        sys.exit(1)
-
     if os.getuid() != 0:
-        print_logging('Run this script as root!')
+        log.info('Run this script as root!')
         sys.exit(1)
 
-    if cmd == 'start':
-        start()
-    elif cmd == 'stop':
-        stop()
+    if args.action == 'start':
+        start(group)
+    elif args.action == 'stop':
+        stop(group)
     else:
-        print_usage()
+        log.info('Unknown action')
         sys.exit(1)
+
 
 if __name__ == '__main__':
     main()
