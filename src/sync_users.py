@@ -14,6 +14,7 @@
 
 import grp
 import os
+import subprocess
 import pwd
 
 import boto3
@@ -132,8 +133,8 @@ def create_local_group(groupname):
     except KeyError:
         log.info('Create group %s' % groupname)
 
-        create_group_command = 'groupadd %s' % groupname
-        os.system(create_group_command)
+        create_group_command = ['/usr/sbin/groupadd', groupname]
+        system_call(create_group_command)
 
         return grp.getgrnam(groupname)
 
@@ -144,8 +145,8 @@ def create_user(username, groupname, rotate_user=False):
         delete_user(username)
 
     log.info('Create user %s' % username)
-    create_user_command = 'useradd -G %s,wheel -c "%s" -m %s' % (groupname, username, username)
-    os.system(create_user_command)
+    create_user_command = ['/usr/sbin/useradd', '-G', '{},wheel'.format(groupname), '-c', username, '-m', username]
+    system_call(create_user_command)
 
     return user_exists(username=username)
 
@@ -216,8 +217,8 @@ def delete_user(username):
         log.info('Cannot delete user')
         return False
 
-    delete_user_command = 'userdel -r %s' % username
-    os.system(delete_user_command)
+    delete_user_command = ['/usr/sbin/userdel', '-r', username]
+    system_call(delete_user_command)
 
     return True
 
@@ -236,12 +237,6 @@ def delete_users(groupname):
 
 def format_groupname(groupname):
     return ''.join(map(lambda x: x if (x.isupper() or x.islower()) else "_", groupname.strip()))
-
-
-def fix_path():
-    for path in ['/usr/sbin', '/sbin']:
-        if path in os.environ['PATH'].split(':'):
-            os.environ['PATH'] = '{}:{}'.format(os.environ['PATH'], path)
 
 
 def start(group):
@@ -268,10 +263,22 @@ def stop(group):
     delete_users(groupname=group)
     log.info('Done undeploying users')
 
+def system_call(command):
+    log.info('Executing command: {}'.format(command))
+    try:
+        p = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        stdout, stderr = p.communicate()
+        rc = p.wait()
+
+    except Exception as e:
+        print('Execute failed: {}'.format(e))
+        print('Stdout: {}'.stdout)
+        print('Stderr: {}'.stderr)
+        return False
+
+    return True if rc == 0 else False
 
 def main():
-
-    fix_path()
 
     group = args.group
 
