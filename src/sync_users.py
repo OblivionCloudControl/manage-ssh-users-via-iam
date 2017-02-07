@@ -188,7 +188,7 @@ def write_ssh_authorized_keys(iam_users):
         f.close()
 
         os.chown(ssh_authorized_keys, pw_uid, pw_gid)
-        os.chmod(ssh_authorized_keys, 0700)
+        os.chmod(ssh_authorized_keys, 0600)
 
 
 def write_sudo_config(groupname):
