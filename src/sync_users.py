@@ -238,6 +238,12 @@ def format_groupname(groupname):
     return ''.join(map(lambda x: x if (x.isupper() or x.islower()) else "_", groupname.strip()))
 
 
+def fix_path():
+    for path in ['/usr/sbin', '/sbin']:
+        if path in os.environ['PATH'].split(':'):
+            os.environ['PATH'] = '{}:{}'.format(os.environ['PATH'], path)
+
+
 def start(group):
     log.info('Deploying users')
 
@@ -264,6 +270,8 @@ def stop(group):
 
 
 def main():
+
+    fix_path()
 
     group = args.group
 
